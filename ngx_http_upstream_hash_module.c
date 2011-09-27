@@ -182,7 +182,7 @@ ngx_http_upstream_init_hash(ngx_conf_t *cf, ngx_http_upstream_srv_conf_t *us)
                     peer_port->socklen  = peers->peer[n].socklen;
 
                     sin = (struct sockaddr_in *) &peer_port->sockaddr;
-                    sin->sin_port = port;
+                    sin->sin_port = htons(port);
                 }
             }
         }
