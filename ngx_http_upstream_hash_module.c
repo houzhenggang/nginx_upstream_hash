@@ -11,6 +11,12 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
+typedef struct {
+    ngx_str_t                   name;
+    ngx_http_get_variable_pt    handler;
+    uintptr_t                   data;
+} ngx_http_upstream_hash_variable_t;
+
 #define ngx_bitvector_index(index) (index / (8 * sizeof(uintptr_t)))
 #define ngx_bitvector_bit(index) ((uintptr_t) 1 << (index % (8 * sizeof(uintptr_t))))
 
@@ -74,6 +80,9 @@ static ngx_int_t ngx_http_upstream_init_hash(ngx_conf_t *cf,
     ngx_http_upstream_srv_conf_t *us);
 static ngx_uint_t ngx_http_upstream_hash_crc32(u_char *keydata, size_t keylen);
 
+static ngx_int_t ngx_http_upstream_hash_add_variable(ngx_conf_t *cf);
+static ngx_int_t ngx_http_random_number_variable(ngx_http_request_t *r, 
+	ngx_http_variable_value_t *v, uintptr_t data);
 
 static ngx_command_t  ngx_http_upstream_hash_commands[] = {
     { ngx_string("hash"),
@@ -102,7 +111,7 @@ static ngx_command_t  ngx_http_upstream_hash_commands[] = {
 
 
 static ngx_http_module_t  ngx_http_upstream_hash_module_ctx = {
-    NULL,                                  /* preconfiguration */
+    ngx_http_upstream_hash_add_variable,   /* preconfiguration */
     NULL,                                  /* postconfiguration */
 
     NULL,                                  /* create main configuration */
@@ -131,6 +140,28 @@ ngx_module_t  ngx_http_upstream_hash_module = {
     NGX_MODULE_V1_PADDING
 };
 
+static ngx_http_upstream_hash_variable_t ngx_http_upstream_hash_variables[] = {
+    { ngx_string("hash_random_number"), ngx_http_random_number_variable, 0 },
+    { ngx_null_string, NULL, 0 }
+};
+
+static ngx_int_t
+ngx_http_random_number_variable(ngx_http_request_t *r, 
+	ngx_http_variable_value_t *v, uintptr_t data)
+{
+    v->data = ngx_pnalloc(r->pool, NGX_TIME_T_LEN);
+    if (v->data == NULL) {
+        return NGX_ERROR;
+    }
+
+    v->len = ngx_sprintf(v->data, "%ud", ngx_current_msec) - v->data;
+
+    v->valid = 1;
+    v->no_cacheable = 0;
+    v->not_found = 0;
+
+    return NGX_OK;
+}
 
 static ngx_int_t
 ngx_http_upstream_init_hash(ngx_conf_t *cf, ngx_http_upstream_srv_conf_t *us)
@@ -510,3 +541,25 @@ ngx_http_upstream_hash_select_port(ngx_conf_t *cf, ngx_command_t *cmd, void *con
 
     return NGX_CONF_OK;
 }
+
+static ngx_int_t
+ngx_http_upstream_hash_add_variable(ngx_conf_t *cf)
+{
+    ngx_http_upstream_hash_variable_t   *var;
+    ngx_http_variable_t               *v;
+
+    for (var = ngx_http_upstream_hash_variables; var->name.len; var++) {
+
+        v = ngx_http_add_variable(cf, &var->name, NGX_HTTP_VAR_CHANGEABLE);
+        if (v == NULL) {
+            return NGX_ERROR;
+        }
+
+        v->get_handler = var->handler;
+        v->data = var->data;
+    }
+
+    return NGX_OK;
+}
+
+
