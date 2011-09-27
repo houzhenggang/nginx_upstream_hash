@@ -15,6 +15,15 @@
 #define ngx_bitvector_bit(index) ((uintptr_t) 1 << (index % (8 * sizeof(uintptr_t))))
 
 typedef struct {
+    struct sockaddr                 sockaddr;
+    socklen_t                       socklen;
+    ngx_uint_t                      port;
+#if (NGX_HTTP_SSL)
+    ngx_ssl_session_t              *ssl_session;   /* local to a process */
+#endif
+} ngx_http_upstream_hash_peer_port_t;
+
+typedef struct {
     struct sockaddr                *sockaddr;
     socklen_t                       socklen;
     ngx_str_t                       name;
@@ -22,6 +31,8 @@ typedef struct {
 #if (NGX_HTTP_SSL)
     ngx_ssl_session_t              *ssl_session;   /* local to a process */
 #endif
+    ngx_uint_t                         port_number;
+    ngx_http_upstream_hash_peer_port_t ports[64];
 } ngx_http_upstream_hash_peer_t;
 
 typedef struct {
@@ -57,6 +68,8 @@ static char *ngx_http_upstream_hash(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char *ngx_http_upstream_hash_again(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+static char *ngx_http_upstream_hash_select_port(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
 static ngx_int_t ngx_http_upstream_init_hash(ngx_conf_t *cf,
     ngx_http_upstream_srv_conf_t *us);
 static ngx_uint_t ngx_http_upstream_hash_crc32(u_char *keydata, size_t keylen);
@@ -73,6 +86,13 @@ static ngx_command_t  ngx_http_upstream_hash_commands[] = {
     { ngx_string("hash_again"),
       NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
       ngx_http_upstream_hash_again,
+      0,
+      0,
+      NULL },
+
+    { ngx_string("hash_select_port"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE2,
+      ngx_http_upstream_hash_select_port,
       0,
       0,
       NULL },
@@ -115,9 +135,11 @@ ngx_module_t  ngx_http_upstream_hash_module = {
 static ngx_int_t
 ngx_http_upstream_init_hash(ngx_conf_t *cf, ngx_http_upstream_srv_conf_t *us)
 {
-    ngx_uint_t                       i, j, n;
+    ngx_uint_t                       i, j, k, n, port;
+    struct sockaddr_in              *sin;
     ngx_http_upstream_server_t      *server;
     ngx_http_upstream_hash_peers_t  *peers;
+    ngx_http_upstream_hash_peer_port_t *peer_port;
 
     us->peer.init = ngx_http_upstream_init_hash_peer;
 
@@ -148,6 +170,21 @@ ngx_http_upstream_init_hash(ngx_conf_t *cf, ngx_http_upstream_srv_conf_t *us)
             peers->peer[n].socklen = server[i].addrs[j].socklen;
             peers->peer[n].name = server[i].addrs[j].name;
             peers->peer[n].down = server[i].down;
+
+            if (us->port_lo && (peers->peer[n].sockaddr->sa_family == AF_INET)) {
+                peers->peer[n].port_number = us->port_hi - us->port_lo + 1;
+
+                port = us->port_lo;
+                for (k = 0; k < peers->peer[n].port_number; k++, port++) {
+                    peer_port = &peers->peer[n].ports[k];
+                    peer_port->port = port;
+                    peer_port->sockaddr = *peers->peer[n].sockaddr;
+                    peer_port->socklen  = peers->peer[n].socklen;
+
+                    sin = (struct sockaddr_in *) &peer_port->sockaddr;
+                    sin->sin_port = port;
+                }
+            }
         }
     }
 
@@ -218,7 +255,8 @@ ngx_http_upstream_get_hash_peer(ngx_peer_connection_t *pc, void *data)
 {
     ngx_http_upstream_hash_peer_data_t  *uhpd = data;
     ngx_http_upstream_hash_peer_t       *peer;
-    ngx_uint_t                           peer_index;
+    ngx_uint_t                           peer_index, port_index;
+    ngx_http_upstream_hash_peer_port_t  *peer_port;
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, pc->log, 0,
                    "upstream_hash: get upstream request hash peer try %ui", pc->tries);
@@ -230,13 +268,22 @@ ngx_http_upstream_get_hash_peer(ngx_peer_connection_t *pc, void *data)
 
     peer = &uhpd->peers->peer[peer_index];
 
-
     ngx_log_debug3(NGX_LOG_DEBUG_HTTP, pc->log, 0,
                    "upstream_hash: chose peer %ui w/ hash %ui for tries %ui", peer_index, uhpd->hash, pc->tries);
 
     pc->sockaddr = peer->sockaddr;
     pc->socklen = peer->socklen;
     pc->name = &peer->name;
+
+    if(peer->port_number) {
+        port_index = uhpd->hash % peer->port_number;
+        peer_port = &peer->ports[port_index];
+        pc->sockaddr = &peer_port->sockaddr;
+        pc->socklen = peer_port->socklen;
+
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, pc->log, 0,
+                "upstream_hash: chose port %ui", peer_port->port);
+    }
 
     return NGX_OK;
 }
@@ -421,6 +468,45 @@ ngx_http_upstream_hash_again(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
 
     uscf->retries = n;
+
+    return NGX_CONF_OK;
+}
+
+static char *
+ngx_http_upstream_hash_select_port(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_upstream_srv_conf_t  *uscf;
+    ngx_int_t n;
+
+    ngx_str_t *value;
+
+    uscf = ngx_http_conf_get_module_srv_conf(cf, ngx_http_upstream_module);
+
+    value = cf->args->elts;
+
+    n = ngx_atoi(value[1].data, value[1].len);
+
+    if (n == NGX_ERROR || n < 0) {
+        return "invalid low port number";
+    }
+
+    uscf->port_lo = n;
+
+    n = ngx_atoi(value[2].data, value[2].len);
+
+    if (n == NGX_ERROR || n < 0) {
+        return "invalid high port number";
+    }
+
+    uscf->port_hi = n;
+
+    if (uscf->port_hi <= uscf->port_lo) {
+        return "the port range should increase by sequence";
+    }
+
+    if ((uscf->port_hi - uscf->port_lo + 1) > 64) {
+        return "too large port range, you should set the port number below 64";
+    }
 
     return NGX_CONF_OK;
 }

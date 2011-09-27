@@ -21,3 +21,17 @@ Works the same on 32-bit and 64-bit systems.
 See http://wiki.nginx.org/NginxHttpUpstreamRequestHashModule for more details.
 
 Questions/patches to Evan Miller, emmiller@gmail.com.
+
+
+Weibin Yao added a new directive of hash_select_port:
+
+=== hash_select_port ===
+
+'''syntax''' ''hash_select_port low_port high_port''
+
+'''default''' ''none''
+
+'''context''' ''upstream''
+
+The server opens the ports of range from low port to high port. This module will choose a port with crc32 hash. The total port number should smaller than 64.
+
