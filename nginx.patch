@@ -9,6 +9,8 @@ diff -Naur src/http/ngx_http_upstream.h src-hash/http/ngx_http_upstream.h
 +    ngx_array_t                     *values;
 +    ngx_array_t                     *lengths;
 +    ngx_uint_t                       retries;
++    ngx_uint_t                       port_hi;
++    ngx_uint_t                       port_lo;
 +#endif
 +
      ngx_uint_t                       flags;
