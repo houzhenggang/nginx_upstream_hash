@@ -23,6 +23,7 @@ typedef struct {
 typedef struct {
     struct sockaddr                 sockaddr;
     socklen_t                       socklen;
+    ngx_str_t                       name;
     ngx_uint_t                      port;
 #if (NGX_HTTP_SSL)
     ngx_ssl_session_t              *ssl_session;   /* local to a process */
@@ -166,7 +167,8 @@ ngx_http_random_number_variable(ngx_http_request_t *r,
 static ngx_int_t
 ngx_http_upstream_init_hash(ngx_conf_t *cf, ngx_http_upstream_srv_conf_t *us)
 {
-    ngx_uint_t                       i, j, k, n, port;
+    u_char                          *p;
+    ngx_uint_t                       i, j, k, n, port, len;
     struct sockaddr_in              *sin;
     ngx_http_upstream_server_t      *server;
     ngx_http_upstream_hash_peers_t  *peers;
@@ -214,6 +216,18 @@ ngx_http_upstream_init_hash(ngx_conf_t *cf, ngx_http_upstream_srv_conf_t *us)
 
                     sin = (struct sockaddr_in *) &peer_port->sockaddr;
                     sin->sin_port = htons(port);
+
+                    len = NGX_INET_ADDRSTRLEN + sizeof(":65535") - 1;
+
+                    p = ngx_pnalloc(cf->pool, len);
+                    if (p == NULL) {
+                        return NGX_ERROR;
+                    }
+
+                    len = ngx_sock_ntop((struct sockaddr *) sin, p, len, 1);
+
+                    peer_port->name.len = len;
+                    peer_port->name.data = p;
                 }
             }
         }
@@ -311,6 +325,7 @@ ngx_http_upstream_get_hash_peer(ngx_peer_connection_t *pc, void *data)
         peer_port = &peer->ports[port_index];
         pc->sockaddr = &peer_port->sockaddr;
         pc->socklen = peer_port->socklen;
+        pc->name = &peer_port->name;
 
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, pc->log, 0,
                 "upstream_hash: chose port %ui", peer_port->port);
