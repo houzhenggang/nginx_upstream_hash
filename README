@@ -33,7 +33,9 @@ Weibin Yao added a new directive of hash_select_port:
 
 '''context''' ''upstream''
 
-The server opens the ports range from low port to high port. This module will choose a port with crc32 hash. The total port number should be smaller than 64.
+The server opens the ports range from the low port to the high port.  The range is [low_port, high_port]. The total port number is (high_port - low_port + 1).
+
+This module will choose a port with crc32 hash. The total port number should be smaller than 64. It does't support the reverse SSL proxy.
 
 === $hash_random_number === 
 
